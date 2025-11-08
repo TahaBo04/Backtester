@@ -1,19 +1,30 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 
 from engine import (
-    simulate_gold_prices, ohlc_from_close, ema,
-    pa_signals, backtest, metrics, summarize_trades
+    simulate_gold_prices,
+    simulate_gold_prices_5m,
+    ohlc_from_close,
+    ema,
+    pa_signals,
+    backtest,
+    metrics,
+    summarize_trades
 )
 
 st.set_page_config(page_title="Gold PA Backtester", layout="wide")
-
 st.title("Gold price action backtester")
 
 with st.sidebar:
+    tf = st.selectbox("Timeframe", ["5-Min", "Daily"])
+    if tf == "5-Min":
+        n_bars = st.number_input("Number of 5-min bars", 200, 50000, 5000, 100)
+    else:
+        n_days = st.number_input("Number of business days", 50, 3000, 900, 50)
+
     st.subheader("Simulation")
-    n_days = st.number_input("Days", 100, 3000, 900, 50)
     start_price = st.number_input("Start price", 100.0, 10000.0, 2000.0, 50.0)
     drift = st.number_input("Annual drift", 0.0, 0.50, 0.03, 0.01)
     vol = st.number_input("Annual vol", 0.01, 1.00, 0.16, 0.01)
@@ -23,8 +34,8 @@ with st.sidebar:
     ema_fast = st.number_input("EMA fast", 5, 200, 21, 1)
     ema_trend = st.number_input("EMA trend", 10, 400, 50, 1)
     min_pb = st.number_input("Min pullback bars", 1, 20, 2, 1)
-    fail_win = st.number_input("Fail window days", 1, 60, 6, 1)
-    second_win = st.number_input("Second entry window days", 1, 60, 12, 1)
+    fail_win = st.number_input("Fail window bars", 1, 60, 6, 1)
+    second_win = st.number_input("Second entry window bars", 1, 60, 12, 1)
     vol_lb = st.number_input("Volume lookback", 5, 200, 20, 1)
     atr_lb = st.number_input("ATR lookback", 5, 200, 20, 1)
     vol_drop = st.number_input("Volume drop multiplier", 0.5, 1.5, 0.9, 0.05)
@@ -42,13 +53,24 @@ with st.sidebar:
 run = st.button("Run backtest", type="primary")
 
 if run:
-    close_series = simulate_gold_prices(
-        n_days=int(n_days),
-        start_price=float(start_price),
-        annual_drift=float(drift),
-        annual_vol=float(vol),
-        seed=int(seed)
-    )
+    if tf == "5-Min":
+        close_series = simulate_gold_prices_5m(
+            n_bars=int(n_bars),
+            start_price=float(start_price),
+            annual_drift=float(drift),
+            annual_vol=float(vol),
+            seed=int(seed),
+            freq="5min"
+        )
+    else:
+        close_series = simulate_gold_prices(
+            n_days=int(n_days),
+            start_price=float(start_price),
+            annual_drift=float(drift),
+            annual_vol=float(vol),
+            seed=int(seed)
+        )
+
     df = ohlc_from_close(close_series)
 
     sig = pa_signals(
@@ -90,21 +112,22 @@ if run:
 
     st.write(f"Trades count: {ts.get('trades', 0)}  Win rate: {ts.get('win_rate', 0):.1%}" if ts.get('trades',0) > 0 else "No trades")
 
-    fig, ax1 = plt.subplots(figsize=(12,6))
-    ax1.plot(df.index, df["Close"], label="Close")
-    ax1.plot(df.index, ema(df["Close"], int(ema_fast)), label=f"EMA{int(ema_fast)}", alpha=0.8)
-    ax1.plot(df.index, ema(df["Close"], int(ema_trend)), label=f"EMA{int(ema_trend)}", alpha=0.8)
-    ax1.set_ylabel("Price")
-    ax1.legend(loc="upper left")
-    ax1.grid(True, alpha=0.2)
-
-    ax2 = ax1.twinx()
-    ax2.plot(equity.index, equity.values, label="Equity", alpha=0.7)
-    ax2.set_ylabel("Equity")
-    fig.tight_layout()
+    # Candlestick with EMAs overlay
+    ap = [
+        mpf.make_addplot(ema(df["Close"], int(ema_fast)), panel=0),
+        mpf.make_addplot(ema(df["Close"], int(ema_trend)), panel=0)
+    ]
+    fig, _ = mpf.plot(
+        df,
+        type="candle",
+        addplot=ap,
+        volume=True,
+        returnfig=True,
+        figsize=(12, 6)
+    )
     st.pyplot(fig)
 
     if not trades.empty:
-        st.dataframe(trades.tail(100))
+        st.dataframe(trades.tail(200))
         csv = trades.to_csv(index=False).encode()
         st.download_button("Download trades CSV", csv, "trades.csv", "text/csv")
