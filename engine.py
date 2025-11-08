@@ -57,48 +57,56 @@ def pa_signals(
     df,
     ema_fast_len=21,
     ema_trend_len=50,
+    ema_opposing_len=9,     # new: for opposing momentum check
     min_pullback_bars=2,
     fail_window=6,
     second_entry_window=12,
     vol_lookback=20,
     atr_lookback=20,
-    vol_drop_mult=0.9,
-    atr_drop_mult=0.9,
+    slow_mult=0.9,          # new: trend volatility must slow (ATR/ATR_SMA < slow_mult)
     allow_shorts=False
 ):
     out = pd.DataFrame(index=df.index)
     out["Close"] = df["Close"]
     out["EMA21"] = ema(df["Close"], ema_fast_len)
     out["EMA50"] = ema(df["Close"], ema_trend_len)
+    out["EMAopp"] = ema(df["Close"], ema_opposing_len)  # very short EMA for “opposing” check
     out["ATR"] = atr(df, 14)
     out["VOL_SMA"] = df["Volume"].rolling(vol_lookback).mean()
     out["ATR_SMA"] = out["ATR"].rolling(atr_lookback).mean()
 
+    # crosses
     cross_up = (out["Close"] > out["EMA21"]) & (out["Close"].shift(1) <= out["EMA21"].shift(1))
     cross_dn = (out["Close"] < out["EMA21"]) & (out["Close"].shift(1) >= out["EMA21"].shift(1))
+
+    # trend
     uptrend   = out["Close"] > out["EMA50"]
     downtrend = out["Close"] < out["EMA50"]
 
+    # pullback segments
     pullback_up = ((out["Close"] <= out["EMA21"]) & uptrend).astype(int)
     pullback_dn = ((out["Close"] >= out["EMA21"]) & downtrend).astype(int)
     pb_count_up = pullback_up.groupby((pullback_up != pullback_up.shift()).cumsum()).cumsum()
     pb_count_dn = pullback_dn.groupby((pullback_dn != pullback_dn.shift()).cumsum()).cumsum()
 
-    vol_drop = df["Volume"] < (out["VOL_SMA"] * vol_drop_mult)
-    atr_drop = out["ATR"] < (out["ATR_SMA"] * atr_drop_mult)
-    drop_ok = vol_drop | atr_drop
+    # trend volatility is slowing?
+    slow_vol = (out["ATR"] / out["ATR_SMA"]) < slow_mult
 
+    # opposing momentum (before re-cross): for long, opp if very short EMA below EMA21; for short, the reverse
+    opp_long  = (out["EMAopp"] < out["EMA21"])
+    opp_short = (out["EMAopp"] > out["EMA21"])
+
+    # stateful second-entry detection (unchanged core idea)
     long_second = pd.Series(0, index=df.index, dtype=int)
     short_second = pd.Series(0, index=df.index, dtype=int)
-    first_up_time = None
-    first_up_high = None
-    first_up_fail_time = None
-    first_dn_time = None
-    first_dn_low = None
-    first_dn_fail_time = None
+
+    first_up_time = first_up_high = first_up_fail_time = None
+    first_dn_time = first_dn_low  = first_dn_fail_time = None
 
     for t in range(2, len(df)):
         i = df.index[t]
+
+        # Long second entry
         if uptrend.iloc[t]:
             if pb_count_up.iloc[t-1] >= min_pullback_bars and cross_up.iloc[t]:
                 if first_up_time is None or (i - first_up_time).days > second_entry_window:
@@ -109,17 +117,13 @@ def pa_signals(
                     if first_up_fail_time is not None and (i - first_up_fail_time).days <= second_entry_window:
                         if df["High"].iloc[t] > first_up_high:
                             long_second.iloc[t] = 1
-                        first_up_time = None
-                        first_up_high = None
-                        first_up_fail_time = None
-            if first_up_time is not None:
-                if cross_dn.iloc[t] and (i - first_up_time).days <= fail_window:
-                    first_up_fail_time = i
+                        first_up_time = first_up_high = first_up_fail_time = None
+            if first_up_time is not None and cross_dn.iloc[t] and (i - first_up_time).days <= fail_window:
+                first_up_fail_time = i
         else:
-            first_up_time = None
-            first_up_high = None
-            first_up_fail_time = None
+            first_up_time = first_up_high = first_up_fail_time = None
 
+        # Short second entry
         if allow_shorts and downtrend.iloc[t]:
             if pb_count_dn.iloc[t-1] >= min_pullback_bars and cross_dn.iloc[t]:
                 if first_dn_time is None or (i - first_dn_time).days > second_entry_window:
@@ -130,26 +134,21 @@ def pa_signals(
                     if first_dn_fail_time is not None and (i - first_dn_fail_time).days <= second_entry_window:
                         if df["Low"].iloc[t] < first_dn_low:
                             short_second.iloc[t] = 1
-                        first_dn_time = None
-                        first_dn_low = None
-                        first_dn_fail_time = None
-            if first_dn_time is not None:
-                if cross_up.iloc[t] and (i - first_dn_time).days <= fail_window:
-                    first_dn_fail_time = i
+                        first_dn_time = first_dn_low = first_dn_fail_time = None
+            if first_dn_time is not None and cross_up.iloc[t] and (i - first_dn_time).days <= fail_window:
+                first_dn_fail_time = i
         else:
-            first_dn_time = None
-            first_dn_low = None
-            first_dn_fail_time = None
+            first_dn_time = first_dn_low = first_dn_fail_time = None
 
+    # Pullback entries only when trend volatility SLOWS and momentum temporarily opposes
     long_pullback = ((uptrend) &
                      (pb_count_up.shift(1) >= min_pullback_bars) &
-                     cross_up &
-                     drop_ok).astype(int)
+                     slow_vol & opp_long & cross_up).astype(int)
+
     if allow_shorts:
         short_pullback = ((downtrend) &
                           (pb_count_dn.shift(1) >= min_pullback_bars) &
-                          cross_dn &
-                          drop_ok).astype(int)
+                          slow_vol & opp_short & cross_dn).astype(int)
     else:
         short_pullback = pd.Series(0, index=df.index, dtype=int)
 
@@ -157,8 +156,10 @@ def pa_signals(
     out["short_second_entry"] = short_second
     out["long_pullback_ema21"] = long_pullback
     out["short_pullback_ema21"] = short_pullback
+
     out["long_entry"]  = ((out["long_second_entry"] == 1) | (out["long_pullback_ema21"] == 1)).astype(int)
     out["short_entry"] = ((out["short_second_entry"] == 1) | (out["short_pullback_ema21"] == 1)).astype(int)
+
     out["long_exit"]  = ((out["Close"] < out["EMA21"]) | (out["Close"] < out["EMA50"])).astype(int)
     out["short_exit"] = ((out["Close"] > out["EMA21"]) | (out["Close"] > out["EMA50"])).astype(int)
     return out
@@ -168,68 +169,112 @@ def backtest(
     df_ohlc,
     signals_df,
     start_cash=10000.0,
-    risk_per_trade=0.01,
-    stop_atr_mult=2.0,
-    tp_atr_mult=4.0,
+    fixed_position_cash=50.0,        # ~ “enter with 50 USD”
+    tp_usd_min=7.0,                  # floor TP
+    tp_usd_max=15.0,                 # cap TP
+    tp_usd_base=10.0,                # base TP before scaling by volatility
+    sl_frac=0.45,                    # SL ≈ 45% of TP (<= 0.5)
+    sl_frac_pullback=0.35,           # even tighter SL on pullbacks
     fee_bps=2.0,
     slippage_bps=1.0,
     allow_shorts=False
 ):
     fee = fee_bps * 1e-4
     slip = slippage_bps * 1e-4
-    idx = df_ohlc.index
-    close = df_ohlc["Close"]
-    high = df_ohlc["High"]
-    low = df_ohlc["Low"]
-    atr_series = signals_df["ATR"]
+
+    idx   = df_ohlc.index
+    close = df_ohlc["Close"]; high = df_ohlc["High"]; low = df_ohlc["Low"]
+    atr_s = signals_df["ATR"]; atr_sma = signals_df["ATR_SMA"]
+
     cash = start_cash
     position = None
-    equity_curve = []
-    trades = []
+    equity_curve, trades = [], []
+
     for t in idx:
-        c = close.loc[t]; h = high.loc[t]; l = low.loc[t]; atr_t = atr_series.loc[t]
+        c = float(close.loc[t]); h = float(high.loc[t]); l = float(low.loc[t])
+        atr_t = float(atr_s.loc[t]) if not pd.isna(atr_s.loc[t]) else None
+        atr_ma = float(atr_sma.loc[t]) if not pd.isna(atr_sma.loc[t]) else None
+
         equity = cash if position is None else cash + position["qty"] * c * (1 if position["side"] == "long" else -1)
+
+        # --- exits first
         if position is not None:
             side = position["side"]; qty = position["qty"]
             stop = position["stop"]; tp = position["tp"]
             entry_price = position["entry"]; entry_time = position["time"]
             exit_price = None; exit_reason = None
+
             if side == "long":
                 if l <= stop: exit_price, exit_reason = stop * (1 - slip), "stop"
-                elif h >= tp: exit_price, exit_reason = tp * (1 - slip), "tp"
+                elif h >= tp: exit_price, exit_reason = tp   * (1 - slip), "tp"
                 elif signals_df.loc[t, "long_exit"] == 1: exit_price, exit_reason = c * (1 - slip), "signal"
             else:
                 if h >= stop: exit_price, exit_reason = stop * (1 + slip), "stop"
-                elif l <= tp: exit_price, exit_reason = tp * (1 + slip), "tp"
+                elif l <= tp: exit_price, exit_reason = tp   * (1 + slip), "tp"
                 elif signals_df.loc[t, "short_exit"] == 1: exit_price, exit_reason = c * (1 + slip), "signal"
+
             if exit_price is not None:
                 gross = qty * (exit_price - entry_price) * (1 if side == "long" else -1)
-                fees = fee * (qty * entry_price + qty * exit_price)
-                pnl = gross - fees
+                fees  = fee * (qty * entry_price + qty * exit_price)
+                pnl   = gross - fees
                 cash += pnl
-                trades.append({"entry_time": entry_time, "exit_time": t, "side": side,
-                               "entry": entry_price, "exit": exit_price, "qty": qty,
-                               "pnl": pnl, "reason": exit_reason})
+                trades.append({
+                    "entry_time": entry_time, "exit_time": t, "side": side,
+                    "entry": entry_price, "exit": exit_price, "qty": qty,
+                    "pnl": pnl, "reason": exit_reason, "tp_usd": position["tp_usd"], "sl_usd": position["sl_usd"],
+                    "kind": position["kind"]
+                })
                 position = None
                 equity = cash
-        if position is None and not np.isnan(atr_t) and atr_t > 0:
-            if signals_df.loc[t, "long_entry"] == 1:
-                stop_dist = stop_atr_mult * atr_t
-                qty = int(max((risk_per_trade * cash) // stop_dist, 0))
-                if qty > 0:
-                    entry_price = c * (1 + slip)
-                    cash -= fee * qty * entry_price
-                    position = {"side": "long", "qty": qty, "entry": entry_price,
-                                "stop": entry_price - stop_dist, "tp": entry_price + tp_atr_mult * atr_t, "time": t}
-            elif allow_shorts and signals_df.loc[t, "short_entry"] == 1:
-                stop_dist = stop_atr_mult * atr_t
-                qty = int(max((risk_per_trade * cash) // stop_dist, 0))
-                if qty > 0:
-                    entry_price = c * (1 - slip)
-                    cash -= fee * qty * entry_price
-                    position = {"side": "short", "qty": qty, "entry": entry_price,
-                                "stop": entry_price + stop_dist, "tp": entry_price - tp_atr_mult * atr_t, "time": t}
+
+        # --- entries
+        if position is None:
+            long_kind  = "none"
+            short_kind = "none"
+            if signals_df.loc[t, "long_second_entry"] == 1:    long_kind = "second"
+            elif signals_df.loc[t, "long_pullback_ema21"] == 1: long_kind = "pullback"
+            if allow_shorts:
+                if signals_df.loc[t, "short_second_entry"] == 1:   short_kind = "second"
+                elif signals_df.loc[t, "short_pullback_ema21"] == 1: short_kind = "pullback"
+
+            # choose volatility scaling using current candle vs ATR_SMA
+            tr_now = max(h - l, 1e-8)
+            vol_ratio = 1.0
+            if atr_ma and atr_ma > 1e-8:
+                vol_ratio = max(tr_now / atr_ma, 0.5)  # keep sane bounds
+            tp_usd = float(np.clip(tp_usd_base * vol_ratio, tp_usd_min, tp_usd_max))
+
+            # position size: ~ $50 notional per trade (fractional allowed)
+            qty = fixed_position_cash / max(c, 1e-8)
+
+            if long_kind != "none" and qty > 0:
+                sl_used = sl_frac_pullback if long_kind == "pullback" else sl_frac
+                sl_usd = min(tp_usd * sl_used, tp_usd * 0.5)
+
+                entry_price = c * (1 + slip)
+                cash -= fee * qty * entry_price
+                tp_price = entry_price + tp_usd / qty
+                sl_price = entry_price - sl_usd / qty
+
+                position = {"side": "long", "qty": qty, "entry": entry_price,
+                            "stop": sl_price, "tp": tp_price, "time": t,
+                            "tp_usd": tp_usd, "sl_usd": sl_usd, "kind": long_kind}
+
+            elif allow_shorts and short_kind != "none" and qty > 0:
+                sl_used = sl_frac_pullback if short_kind == "pullback" else sl_frac
+                sl_usd = min(tp_usd * sl_used, tp_usd * 0.5)
+
+                entry_price = c * (1 - slip)
+                cash -= fee * qty * entry_price
+                tp_price = entry_price - tp_usd / qty
+                sl_price = entry_price + sl_usd / qty
+
+                position = {"side": "short", "qty": qty, "entry": entry_price,
+                            "stop": sl_price, "tp": tp_price, "time": t,
+                            "tp_usd": tp_usd, "sl_usd": sl_usd, "kind": short_kind}
+
         equity_curve.append(equity)
+
     eq = pd.Series(equity_curve, index=idx, name="Equity")
     trades_df = pd.DataFrame(trades)
     return eq, trades_df
