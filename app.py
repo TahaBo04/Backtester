@@ -33,24 +33,26 @@ with st.sidebar:
     st.subheader("Signals")
     ema_fast = st.number_input("EMA fast", 5, 200, 21, 1)
     ema_trend = st.number_input("EMA trend", 10, 400, 50, 1)
-    min_pb = st.number_input("Min pullback bars", 1, 20, 2, 1)
-    fail_win = st.number_input("Fail window bars", 1, 60, 6, 1)
-    second_win = st.number_input("Second entry window bars", 1, 60, 12, 1)
-    vol_lb = st.number_input("Volume lookback", 5, 200, 20, 1)
-    atr_lb = st.number_input("ATR lookback", 5, 200, 20, 1)
-    vol_drop = st.number_input("Volume drop multiplier", 0.5, 1.5, 0.9, 0.05)
-    atr_drop = st.number_input("ATR drop multiplier", 0.5, 1.5, 0.9, 0.05)
+    ema_opp   = st.number_input("Opposing EMA length", 3, 21, 9, 1)
+    min_pb    = st.number_input("Min pullback bars", 1, 20, 2, 1)
+    fail_win  = st.number_input("Fail window bars", 1, 60, 6, 1)
+    second_win= st.number_input("Second entry window bars", 1, 60, 12, 1)
+    vol_lb    = st.number_input("Volume lookback", 5, 200, 20, 1)
+    atr_lb    = st.number_input("ATR lookback", 5, 200, 20, 1)
+    slow_mult = st.number_input("Volatility slow multiplier ATR/ATR_SMA", 0.60, 1.00, 0.90, 0.01)
     allow_shorts = st.checkbox("Allow shorts", value=False)
 
     st.subheader("Risk")
     start_cash = st.number_input("Start cash", 1000.0, 1_000_000.0, 10_000.0, 500.0)
-    risk_pt = st.number_input("Risk per trade", 0.001, 0.05, 0.01, 0.001)
-    stop_atr = st.number_input("Stop ATR mult", 0.5, 10.0, 2.0, 0.1)
-    tp_atr = st.number_input("Take profit ATR mult", 0.5, 20.0, 4.0, 0.1)
-    fee_bps = st.number_input("Fee bps", 0.0, 50.0, 2.0, 0.5)
-    slip_bps = st.number_input("Slippage bps", 0.0, 50.0, 1.0, 0.5)
-
-run = st.button("Run backtest", type="primary")
+    fixed_cash = st.number_input("Cash per trade USD", 10.0, 500.0, 50.0, 5.0)
+    tp_base    = st.number_input("Base TP USD", 5.0, 30.0, 10.0, 1.0)
+    tp_min     = st.number_input("Min TP USD", 1.0, 30.0, 7.0, 1.0)
+    tp_max     = st.number_input("Max TP USD", 5.0, 50.0, 15.0, 1.0)
+    sl_frac    = st.number_input("SL fraction of TP", 0.10, 0.50, 0.45, 0.05)
+    sl_frac_pb = st.number_input("SL fraction pullbacks", 0.10, 0.50, 0.35, 0.05)
+    fee_bps    = st.number_input("Fee bps", 0.0, 50.0, 2.0, 0.5)
+    slip_bps   = st.number_input("Slippage bps", 0.0, 50.0, 1.0, 0.5)
+    run = st.button("Run backtest", type="primary")
 
 if run:
     if tf == "5-Min":
@@ -74,29 +76,32 @@ if run:
     df = ohlc_from_close(close_series)
 
     sig = pa_signals(
-        df,
-        ema_fast_len=int(ema_fast),
-        ema_trend_len=int(ema_trend),
-        min_pullback_bars=int(min_pb),
-        fail_window=int(fail_win),
-        second_entry_window=int(second_win),
-        vol_lookback=int(vol_lb),
-        atr_lookback=int(atr_lb),
-        vol_drop_mult=float(vol_drop),
-        atr_drop_mult=float(atr_drop),
-        allow_shorts=bool(allow_shorts)
+    df,
+    ema_fast_len=int(ema_fast),
+    ema_trend_len=int(ema_trend),
+    ema_opposing_len=int(ema_opp),
+    min_pullback_bars=int(min_pb),
+    fail_window=int(fail_win),
+    second_entry_window=int(second_win),
+    vol_lookback=int(vol_lb),
+    atr_lookback=int(atr_lb),
+    slow_mult=float(slow_mult),
+    allow_shorts=bool(allow_shorts)
     )
 
     equity, trades = backtest(
-        df_ohlc=df,
-        signals_df=sig,
-        start_cash=float(start_cash),
-        risk_per_trade=float(risk_pt),
-        stop_atr_mult=float(stop_atr),
-        tp_atr_mult=float(tp_atr),
-        fee_bps=float(fee_bps),
-        slippage_bps=float(slip_bps),
-        allow_shorts=bool(allow_shorts)
+    df_ohlc=df,
+    signals_df=sig,
+    start_cash=float(start_cash),
+    fixed_position_cash=float(fixed_cash),
+    tp_usd_min=float(tp_min),
+    tp_usd_max=float(tp_max),
+    tp_usd_base=float(tp_base),
+    sl_frac=float(sl_frac),
+    sl_frac_pullback=float(sl_frac_pb),
+    fee_bps=float(fee_bps),
+    slippage_bps=float(slip_bps),
+    allow_shorts=bool(allow_shorts)
     )
 
     m = metrics(equity)
