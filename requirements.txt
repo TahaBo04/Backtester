@@ -5,3 +5,4 @@ matplotlib==3.8.4
 streamlit==1.38.0
 pillow==10.4.0
 python-dateutil==2.9.0.post0
+mplfinance==0.12.10b0
