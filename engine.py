@@ -272,3 +272,28 @@ def plot_results(df, equity):
     fig.legend(loc="upper left")
     plt.tight_layout()
     plt.show()
+
+from pandas.tseries.frequencies import to_offset
+
+def simulate_gold_prices_5m(
+    n_bars=5000,
+    start_price=2000.0,
+    annual_drift=0.03,
+    annual_vol=0.16,
+    seed=7,
+    freq="5min"
+):
+    """
+    Intraday GBM close series at 5-minute resolution.
+    """
+    rng = np.random.default_rng(seed)
+    step_seconds = to_offset(freq).delta.total_seconds()
+    bars_per_year = 365.25 * 24 * 3600 / step_seconds
+    dt = 1.0 / bars_per_year
+    mu = annual_drift
+    sigma = annual_vol
+    shocks = rng.normal(0.0, np.sqrt(dt), size=n_bars)
+    log_rets = (mu - 0.5 * sigma**2) * dt + sigma * shocks
+    prices = start_price * np.exp(np.cumsum(log_rets))
+    idx = pd.date_range(end=pd.Timestamp.now().floor(freq), periods=n_bars, freq=freq)
+    return pd.Series(prices, index=idx, name="Close")
